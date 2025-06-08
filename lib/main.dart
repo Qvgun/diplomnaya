@@ -38,7 +38,113 @@ class MealSuggestion {
   }
 }
 
-// --- Gemini Suggestion Service ---
+// Перечисление для пола
+enum Gender { male, female }
+
+// Перечисление для уровня активности
+enum ActivityLevel { sedentary, light, moderate, active, veryActive }
+
+// Перечисление для цели
+enum Goal { lose, maintain, gain }
+
+// Класс-калькулятор и генератор промпта для плана
+class PlanGeneratorService {
+  Future<String> generatePlan({
+    required UserProfileModel profile,
+    required int age,
+    required Gender gender,
+    required ActivityLevel activity,
+    required Goal goal,
+  }) async {
+
+    // Словесное описание данных для промпта
+    String genderStr = gender == Gender.male ? "Мужчина" : "Женщина";
+    String activityStr = "";
+    switch (activity) {
+      case ActivityLevel.sedentary:
+        activityStr = "Сидячий образ жизни (офисная работа, мало или нет физических нагрузок)";
+        break;
+      case ActivityLevel.light:
+        activityStr = "Легкая активность (легкие упражнения/прогулки 1-3 дня в неделю)";
+        break;
+      case ActivityLevel.moderate:
+        activityStr = "Умеренная активность (умеренные упражнения 3-5 дней в неделю)";
+        break;
+      case ActivityLevel.active:
+        activityStr = "Высокая активность (интенсивные упражнения 6-7 дней в неделю)";
+        break;
+      case ActivityLevel.veryActive:
+        activityStr = "Очень высокая активность (очень интенсивные упражнения, физическая работа)";
+        break;
+    }
+    String goalStr = "";
+    switch(goal) {
+      case Goal.lose:
+        goalStr = "Похудение (сброс веса)";
+        break;
+      case Goal.maintain:
+        goalStr = "Поддержание текущего веса";
+        break;
+      case Goal.gain:
+        goalStr = "Набор мышечной массы";
+        break;
+    }
+
+    // Создание детального промпта для Gemini
+    final prompt = """
+    Выступи в роли опытного фитнес-диетолога.
+    Мне нужен структурированный и подробный план питания для пользователя со следующими данными:
+    - Пол: $genderStr
+    - Возраст: $age лет
+    - Текущий вес: ${profile.weight.toStringAsFixed(1)} кг
+    - Рост: ${profile.height.toStringAsFixed(0)} см
+    - Уровень активности: $activityStr
+    - Основная цель: $goalStr
+
+    Твой ответ должен быть четко структурирован. Используй Markdown для форматирования.
+    План должен включать следующие разделы:
+
+    1.  **Общая рекомендация по калориям:** Рассчитай суточную норму калорий, используя формулу Харриса-Бенедикта как ориентир, и скорректируй ее в соответствии с целью (небольшой дефицит для похудения, профицит для набора массы). Укажи итоговое число.
+
+    2.  **Рекомендация по БЖУ:** На основе рассчитанной калорийности, предложи оптимальное распределение белков, жиров и углеводов в граммах.
+
+    3.  **Примерное меню на 1 день:** Составь примерное меню на день (Завтрак, Обед, Ужин, и 1-2 перекуса), которое соответствует рассчитанному КБЖУ. Для каждого приема пищи укажи 2-3 варианта блюд с примерным весом порций.
+
+    4.  **Общие рекомендации:** Дай 3-4 кратких, но важных совета по питанию и образу жизни, исходя из цели пользователя (например, про питьевой режим, важность белка, выбор сложных углеводов и т.д.).
+
+    Ответ должен быть только на русском языке, в дружелюбном и мотивирующем тоне.
+    """;
+
+    // Отправка запроса в Gemini API
+    try {
+      final response = await http.post(
+        Uri.parse('${GeminiSuggestionService.instance._apiUrl}?key=${GeminiSuggestionService.instance._apiKey}'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          "contents": [{"parts": [{"text": prompt}]}]
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body);
+        if (body['candidates'] != null && (body['candidates'] as List).isNotEmpty) {
+          return body['candidates'][0]['content']['parts'][0]['text'] as String;
+        }
+        throw Exception("Не удалось сгенерировать план: пустой ответ от API.");
+      } else {
+        final errorBody = jsonDecode(response.body);
+        final errorMessage = errorBody['error']['message'] as String? ?? 'Неизвестная ошибка API';
+        throw Exception('Ошибка API: $errorMessage');
+      }
+    } catch (e) {
+      print("Ошибка при генерации плана: $e");
+      throw Exception('Ошибка сети при генерации плана. Проверьте подключение.');
+    }
+  }
+}
+
+
+// --- Gemini Suggestion Service (без изменений) ---
 class GeminiSuggestionService {
   static final GeminiSuggestionService instance = GeminiSuggestionService._init();
   GeminiSuggestionService._init();
@@ -47,8 +153,8 @@ class GeminiSuggestionService {
   final String _apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent';
 
   Future<List<MealSuggestion>> getMealSuggestions(String query) async {
-    if (_apiKey.startsWith('YOUR_API_KEY')) {
-      print("API ключ не установлен.");
+    if (_apiKey.startsWith('YOUR_API_KEY') || query.isEmpty) {
+      print("API ключ не установлен или запрос пуст.");
       throw Exception('API ключ не настроен.');
     }
 
@@ -531,11 +637,14 @@ class MyApp extends StatelessWidget {
       supportedLocales: const [Locale('ru', 'RU'), Locale('en', '')],
       locale: const Locale('ru', 'RU'),
       initialRoute: '/',
+      // ИЗМЕНЕНИЕ: Добавлены новые маршруты
       routes: {
         '/': (context) => const SplashScreen(),
         '/user_selection': (context) => const UserSelectionScreen(),
         '/registration': (context) => const RegistrationScreen(),
         '/home': (context) => const HomeScreen(),
+        '/plan_survey': (context) => const PlanSurveyScreen(), // Новый маршрут
+        '/plan_result': (context) => const PlanResultScreen(), // Новый маршрут
       },
       onGenerateRoute: (settings) {
         if (settings.name == '/profile') {
@@ -623,6 +732,32 @@ class _UserSelectionScreenState extends State<UserSelectionScreen> {
     }
   }
 
+  void _showDeleteDialog(UserProfileModel profile) {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text('Удалить профиль ${profile.name}?'),
+          content: const Text('Это действие нельзя отменить. Все данные будут стерты.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
+            TextButton(
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              onPressed: () async {
+                if (profile.id != null) {
+                  await DatabaseHelper.instance.deleteUserProfile(profile.id!);
+                  Navigator.pop(context);
+                  _refreshProfiles();
+                }
+              },
+              child: const Text('Удалить'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -648,6 +783,10 @@ class _UserSelectionScreenState extends State<UserSelectionScreen> {
                   ),
                   title: Text(profile.name),
                   subtitle: Text('ID: ${profile.id}'),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+                    onPressed: () => _showDeleteDialog(profile),
+                  ),
                   onTap: () {
                     Navigator.pushReplacementNamed(context, '/home', arguments: profile);
                   },
@@ -964,6 +1103,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
         const SizedBox(height: 10),
         Center(child: Text(bmiInterpretationText, textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: bmiColor, fontWeight: FontWeight.bold))),
         const SizedBox(height: 40),
+        const SizedBox(height: 20),
+        // ИЗМЕНЕНИЕ: Добавлена кнопка
+        Center(
+          child: ElevatedButton(
+            onPressed: () {
+              Navigator.pushNamed(context, '/plan_survey', arguments: widget.userProfile);
+            },
+            style: ElevatedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 15),
+            ),
+            child: const Text('Рассчитать мой план'),
+          ),
+        ),
+        const SizedBox(height: 40),
       ])),
     );
   }
@@ -999,6 +1152,163 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (bmi > maxBmi) return scaleActualWidth - indicatorWidth;
     double position = ((bmi - minBmi) / (maxBmi - minBmi)) * scaleActualWidth;
     return position.clamp(0, scaleActualWidth - indicatorWidth);
+  }
+}
+
+
+// --- НОВЫЕ ЭКРАНЫ ДЛЯ ГЕНЕРАТОРА ПЛАНОВ ---
+
+// ЭКРАН ОПРОСА
+class PlanSurveyScreen extends StatefulWidget {
+  const PlanSurveyScreen({super.key});
+
+  @override
+  State<PlanSurveyScreen> createState() => _PlanSurveyScreenState();
+}
+
+class _PlanSurveyScreenState extends State<PlanSurveyScreen> {
+  final _formKey = GlobalKey<FormState>();
+  final _ageController = TextEditingController();
+
+  Gender? _selectedGender;
+  ActivityLevel? _selectedActivityLevel;
+  Goal? _selectedGoal;
+
+  bool _isLoading = false;
+
+  @override
+  void dispose() {
+    _ageController.dispose();
+    super.dispose();
+  }
+
+  void _generatePlan() async {
+    if (_formKey.currentState!.validate()) {
+      setState(() => _isLoading = true);
+
+      final userProfile = ModalRoute.of(context)!.settings.arguments as UserProfileModel;
+
+      try {
+        final plan = await PlanGeneratorService().generatePlan(
+          profile: userProfile,
+          age: int.parse(_ageController.text),
+          gender: _selectedGender!,
+          activity: _selectedActivityLevel!,
+          goal: _selectedGoal!,
+        );
+
+        if(mounted) {
+          Navigator.pushNamed(context, '/plan_result', arguments: plan);
+        }
+
+      } catch (e) {
+        if(mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Ошибка генерации плана: ${e.toString()}'))
+          );
+        }
+      } finally {
+        if (mounted) {
+          setState(() => _isLoading = false);
+        }
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Анкета для плана')),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : SingleChildScrollView(
+        padding: const EdgeInsets.all(16.0),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              DropdownButtonFormField<Gender>(
+                value: _selectedGender,
+                onChanged: (val) => setState(() => _selectedGender = val),
+                items: const [
+                  DropdownMenuItem(value: Gender.male, child: Text('Мужской')),
+                  DropdownMenuItem(value: Gender.female, child: Text('Женский')),
+                ],
+                decoration: const InputDecoration(labelText: 'Ваш пол', border: OutlineInputBorder()),
+                validator: (v) => v == null ? 'Выберите пол' : null,
+              ),
+              const SizedBox(height: 20),
+              TextFormField(
+                controller: _ageController,
+                decoration: const InputDecoration(labelText: 'Ваш возраст (полных лет)', border: OutlineInputBorder()),
+                keyboardType: TextInputType.number,
+                validator: (v) {
+                  if (v == null || v.isEmpty) return 'Введите возраст';
+                  if (int.tryParse(v) == null || int.parse(v) < 14 || int.parse(v) > 100) {
+                    return 'Введите корректный возраст (14-100)';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 20),
+              DropdownButtonFormField<ActivityLevel>(
+                value: _selectedActivityLevel,
+                onChanged: (val) => setState(() => _selectedActivityLevel = val),
+                isExpanded: true,
+                items: const [
+                  DropdownMenuItem(value: ActivityLevel.sedentary, child: Text('Сидячий образ жизни')),
+                  DropdownMenuItem(value: ActivityLevel.light, child: Text('Легкая активность (1-3/нед.)')),
+                  DropdownMenuItem(value: ActivityLevel.moderate, child: Text('Средняя активность (3-5/нед.)')),
+                  DropdownMenuItem(value: ActivityLevel.active, child: Text('Высокая активность (6-7/нед.)')),
+                  DropdownMenuItem(value: ActivityLevel.veryActive, child: Text('Очень высокая активность (спортсмен)')),
+                ],
+                decoration: const InputDecoration(labelText: 'Уровень активности', border: OutlineInputBorder()),
+                validator: (v) => v == null ? 'Выберите уровень активности' : null,
+              ),
+              const SizedBox(height: 20),
+              DropdownButtonFormField<Goal>(
+                value: _selectedGoal,
+                onChanged: (val) => setState(() => _selectedGoal = val),
+                items: const [
+                  DropdownMenuItem(value: Goal.lose, child: Text('Похудение')),
+                  DropdownMenuItem(value: Goal.maintain, child: Text('Поддержание веса')),
+                  DropdownMenuItem(value: Goal.gain, child: Text('Набор массы')),
+                ],
+                decoration: const InputDecoration(labelText: 'Ваша цель', border: OutlineInputBorder()),
+                validator: (v) => v == null ? 'Выберите цель' : null,
+              ),
+              const SizedBox(height: 40),
+              ElevatedButton(
+                onPressed: _generatePlan,
+                style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16)),
+                child: const Text('Получить план'),
+              )
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ЭКРАН РЕЗУЛЬТАТОВ
+class PlanResultScreen extends StatelessWidget {
+  const PlanResultScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final planText = ModalRoute.of(context)!.settings.arguments as String;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Ваш персональный план'),
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16.0),
+        child: Text(planText),
+      ),
+    );
   }
 }
 
@@ -1069,6 +1379,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 }
+
 
 class FoodTrackingScreen extends StatefulWidget {
   final UserProfileModel currentUserProfile;
@@ -1328,7 +1639,8 @@ class _AddEditMealScreenState extends State<AddEditMealScreen> {
               _updateFieldsFromSuggestion(selection);
             },
             fieldViewBuilder: (context, fieldController, fieldFocusNode, onFieldSubmitted) {
-              return _buildTextField(controller: fieldController, focusNode: fieldFocusNode, labelText: 'Название продукта/блюда', validator: (v) => (v == null || v.isEmpty) ? 'Введите название' : null);
+              _nameController = fieldController;
+              return _buildTextField(controller: _nameController, focusNode: fieldFocusNode, labelText: 'Название продукта/блюда', validator: (v) => (v == null || v.isEmpty) ? 'Введите название' : null);
             },
             optionsViewBuilder: (context, onSelected, options) {
               return Align(
@@ -1655,7 +1967,7 @@ class _WeightTrackingScreenState extends State<WeightTrackingScreen> {
         return ListTile(
           leading: const Icon(Icons.monitor_weight_outlined, color: Colors.deepPurple),
           title: Text('${entry.weight.toStringAsFixed(1)} кг', style: const TextStyle(fontWeight: FontWeight.w500)),
-          subtitle: Text(DateFormat('dd MMMM yyyy', 'ru_RU').format(DateTime.parse(entry.date))),
+          subtitle: Text(DateFormat('dd MMMM finalList', 'ru_RU').format(DateTime.parse(entry.date))),
           trailing: Row(mainAxisSize: MainAxisSize.min, children: [
             IconButton(icon: const Icon(Icons.edit, color: Colors.grey), onPressed: () => _showAddEditDialog(entry: entry)),
             IconButton(icon: const Icon(Icons.delete_outline, color: Colors.redAccent), onPressed: () => _deleteWeightEntry(entry.id!)),
